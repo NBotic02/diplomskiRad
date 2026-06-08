@@ -1,0 +1,15 @@
+# =====================================================================
+# prod profile — Auth0 JWT validation enforced on every endpoint.
+# AUTH0_DOMAIN and AUTH0_AUDIENCE must be populated in the environment.
+# =====================================================================
+app:
+  security:
+    enabled: true
+
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: https://${AUTH0_DOMAIN}/
+          audiences: ${AUTH0_AUDIENCE}

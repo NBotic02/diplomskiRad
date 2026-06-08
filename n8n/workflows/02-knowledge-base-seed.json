@@ -1,0 +1,138 @@
+{
+  "id": "b1e61492-6c8e-46a0-bf1f-1b327e1f3e63",
+  "name": "WF KB — Knowledge base seed",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  },
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Manual trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "parameters": {}
+    },
+    {
+      "id": "readFiles",
+      "name": "Read FAQ files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 300],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Read every Markdown file in the mounted /data/kb directory and\n// emit one n8n item per file. Chunking and embedding happen later in\n// the LangChain sub-graph (Recursive Character Text Splitter +\n// Embeddings + Pinecone Vector Store).\nconst fs   = require('fs');\nconst path = require('path');\n\nconst KB_DIR = '/data/kb';\nconst files  = fs.readdirSync(KB_DIR).filter(f => f.endsWith('.md'));\n\nconst cap = s => s.charAt(0).toUpperCase() + s.slice(1);\n\nreturn files.map(file => ({\n  json: {\n    content:  fs.readFileSync(path.join(KB_DIR, file), 'utf-8'),\n    category: cap(path.basename(file, '.md')),\n  },\n}));"
+      }
+    },
+    {
+      "id": "splitter",
+      "name": "Recursive Character Text Splitter",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [600, 640],
+      "parameters": {
+        "chunkSize": 800,
+        "chunkOverlap": 100,
+        "options": {
+          "separators": ["\n\n## ", "\n\n", "\n", ". ", " ", ""]
+        }
+      }
+    },
+    {
+      "id": "loader",
+      "name": "Default Data Loader",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1,
+      "position": [600, 480],
+      "parameters": {
+        "dataType": "json",
+        "jsonMode": "expressionData",
+        "jsonData": "={{ $json.content }}",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              { "name": "category", "value": "={{ $json.category }}" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "embeddings",
+      "name": "Embeddings Google Gemini",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleGemini",
+      "typeVersion": 1,
+      "position": [800, 480],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "s6vjxIG6UrJaiyrQ",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      },
+      "parameters": {
+        "modelName": "models/gemini-embedding-001"
+      }
+    },
+    {
+      "id": "pinecone",
+      "name": "Pinecone Vector Store",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1,
+      "position": [800, 300],
+      "credentials": {
+        "pineconeApi": {
+          "id": "gE9amQ6uO2J2709e",
+          "name": "Pinecone account"
+        }
+      },
+      "parameters": {
+        "mode": "insert",
+        "pineconeIndex": {
+          "__rl": true,
+          "mode": "list",
+          "value": "customer-support-kb"
+        }
+      }
+    },
+    {
+      "id": "summary",
+      "name": "Result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1000, 300],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "1", "name": "status", "value": "OK — vectors upserted to Pinecone", "type": "string" }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Manual trigger": {
+      "main": [[{ "node": "Read FAQ files", "type": "main", "index": 0 }]]
+    },
+    "Read FAQ files": {
+      "main": [[{ "node": "Pinecone Vector Store", "type": "main", "index": 0 }]]
+    },
+    "Pinecone Vector Store": {
+      "main": [[{ "node": "Result", "type": "main", "index": 0 }]]
+    },
+    "Default Data Loader": {
+      "ai_document": [[{ "node": "Pinecone Vector Store", "type": "ai_document", "index": 0 }]]
+    },
+    "Recursive Character Text Splitter": {
+      "ai_textSplitter": [[{ "node": "Default Data Loader", "type": "ai_textSplitter", "index": 0 }]]
+    },
+    "Embeddings Google Gemini": {
+      "ai_embedding": [[{ "node": "Pinecone Vector Store", "type": "ai_embedding", "index": 0 }]]
+    }
+  }
+}

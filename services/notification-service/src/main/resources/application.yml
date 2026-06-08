@@ -1,0 +1,99 @@
+# =====================================================================
+# notification-service — common configuration
+# =====================================================================
+spring:
+  application:
+    name: notification-service
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:customer_support}?currentSchema=notification,shared_types
+    username: ${NOTIFICATION_DB_USER}
+    password: ${NOTIFICATION_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: notification
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    schemas: notification
+    default-schema: notification
+    create-schemas: false
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    listener:
+      simple:
+        retry:
+          enabled: true
+          initial-interval: 2s
+          max-attempts: 3
+
+  # Gmail SMTP (set GMAIL_USER and GMAIL_APP_PASSWORD in .env).
+  # If credentials are blank the EmailSender drops to log-only mode so
+  # the rest of the service still works in dev.
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ${GMAIL_USER:}
+    password: ${GMAIL_APP_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
+
+  jackson:
+    mapper:
+      ACCEPT_CASE_INSENSITIVE_ENUMS: true
+
+server:
+  port: 8083
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+  health:
+    # Disable Spring's automatic SMTP probe — it dials Gmail on every
+    # /actuator/health call, which fails when credentials are unset
+    # and pulls the overall status to DOWN. Real delivery is gated by
+    # the EmailSender's app.mail.enabled flag.
+    mail:
+      enabled: false
+
+logging:
+  level:
+    com.customersupport.notificationservice: INFO
+    org.hibernate.SQL: WARN
+
+app:
+  rabbitmq:
+    case-events-exchange: case-events
+    case-events-queue:    notification.case-events
+  mail:
+    from: ${GMAIL_USER:no-reply@example.com}
+    enabled: ${MAIL_ENABLED:false}

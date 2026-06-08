@@ -1,0 +1,68 @@
+# =====================================================================
+# employee-service — common configuration
+# =====================================================================
+spring:
+  application:
+    name: employee-service
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:customer_support}?currentSchema=employee,shared_types
+    username: ${EMPLOYEE_DB_USER}
+    password: ${EMPLOYEE_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: employee
+        # No jdbc.time_zone here — shifts use TIME WITHOUT TIME ZONE
+        # (wall-clock office hours). Forcing a UTC mapping shifts the
+        # values by the JVM offset and breaks the overnight shift
+        # rendering on the calendar.
+
+  flyway:
+    enabled: true
+    schemas: employee
+    default-schema: employee
+    create-schemas: false
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+
+  jackson:
+    mapper:
+      ACCEPT_CASE_INSENSITIVE_ENUMS: true
+
+server:
+  port: 8082
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    com.customersupport.employeeservice: INFO
+    org.hibernate.SQL: WARN
+
+app:
+  rabbitmq:
+    case-events-exchange: case-events
+    agent-events-exchange: agent-events
+    case-created-queue: employee.case-created

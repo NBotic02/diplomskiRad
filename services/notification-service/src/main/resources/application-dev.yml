@@ -1,0 +1,8 @@
+app:
+  security:
+    enabled: false
+
+logging:
+  level:
+    com.customersupport.notificationservice: DEBUG
+    org.hibernate.SQL: DEBUG

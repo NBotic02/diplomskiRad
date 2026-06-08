@@ -1,0 +1,317 @@
+# =====================================================================
+# Customer Support Platform — local development stack
+# Brings up PostgreSQL, RabbitMQ and n8n.
+# Spring Boot services and the React frontend are added incrementally
+# in later steps and will join this same docker network.
+# =====================================================================
+
+name: customer-support
+
+services:
+  # -------------------------------------------------------------------
+  # PostgreSQL 16 — single instance, one database, multiple schemas
+  # (one schema per microservice, plus shared_types and n8n).
+  # -------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: csupport-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      # Forwarded so init scripts can create per-service roles.
+      CASE_DB_USER: ${CASE_DB_USER}
+      CASE_DB_PASSWORD: ${CASE_DB_PASSWORD}
+      EMPLOYEE_DB_USER: ${EMPLOYEE_DB_USER}
+      EMPLOYEE_DB_PASSWORD: ${EMPLOYEE_DB_PASSWORD}
+      NOTIFICATION_DB_USER: ${NOTIFICATION_DB_USER}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD}
+      ANALYTICS_DB_USER: ${ANALYTICS_DB_USER}
+      ANALYTICS_DB_PASSWORD: ${ANALYTICS_DB_PASSWORD}
+      N8N_DB_USER: ${N8N_DB_USER}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD}
+      TZ: Europe/Zagreb
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - csupport-net
+
+  # -------------------------------------------------------------------
+  # RabbitMQ 3 with management UI — async events between services.
+  # Topology (exchanges, queues, bindings) is declared by Spring Boot
+  # services on startup via Spring AMQP.
+  # -------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: csupport-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # Management UI — http://localhost:15672
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      TZ: Europe/Zagreb
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - csupport-net
+
+  # -------------------------------------------------------------------
+  # case-service — Case Management microservice (Spring Boot, port 8081).
+  # Owns the case_mgmt schema; publishes case lifecycle events to the
+  # case-events topic exchange via the transactional outbox pattern.
+  # -------------------------------------------------------------------
+  case-service:
+    build:
+      context: ./services/case-service
+    container_name: csupport-case-service
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      CASE_DB_USER: ${CASE_DB_USER}
+      CASE_DB_PASSWORD: ${CASE_DB_PASSWORD}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      # Outbound customer-facing email — Gmail SMTP via App Password.
+      # Leave blank to keep the OutboundEmailSender in log-only mode.
+      GMAIL_USER:         ${GMAIL_USER:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      MAIL_ENABLED:       ${MAIL_ENABLED:-true}
+      MAIL_FROM_NAME:     ${MAIL_FROM_NAME:-Supportly Customer Support}
+      TZ: Europe/Zagreb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - csupport-net
+
+  # -------------------------------------------------------------------
+  # employee-service — Employee & Calendar microservice (port 8082).
+  # Owns the employee schema; exposes the agent roster, skills,
+  # shifts and the GET /api/v1/agents/available lookup that n8n calls
+  # when escalating cases to a human.
+  # -------------------------------------------------------------------
+  employee-service:
+    build:
+      context: ./services/employee-service
+    container_name: csupport-employee-service
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      EMPLOYEE_DB_USER: ${EMPLOYEE_DB_USER}
+      EMPLOYEE_DB_PASSWORD: ${EMPLOYEE_DB_PASSWORD}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      TZ: Europe/Zagreb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - csupport-net
+
+  # -------------------------------------------------------------------
+  # notification-service — Notification microservice (port 8083).
+  # Owns the notification schema; consumes case-events from RabbitMQ
+  # and exposes POST /api/v1/notifications/send for n8n.
+  # -------------------------------------------------------------------
+  notification-service:
+    build:
+      context: ./services/notification-service
+    container_name: csupport-notification-service
+    restart: unless-stopped
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      NOTIFICATION_DB_USER: ${NOTIFICATION_DB_USER}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      GMAIL_USER: ${GMAIL_USER:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      MAIL_ENABLED: ${MAIL_ENABLED:-false}
+      TZ: Europe/Zagreb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8083/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - csupport-net
+
+  # -------------------------------------------------------------------
+  # analytics-service — Analytics microservice (port 8084).
+  # Owns the analytics schema; consumes case-events as a CQRS read
+  # model and runs a scheduled bottleneck-detection job.
+  # -------------------------------------------------------------------
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+    container_name: csupport-analytics-service
+    restart: unless-stopped
+    ports:
+      - "8084:8084"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      ANALYTICS_DB_USER: ${ANALYTICS_DB_USER}
+      ANALYTICS_DB_PASSWORD: ${ANALYTICS_DB_PASSWORD}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      TZ: Europe/Zagreb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8084/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - csupport-net
+
+  # -------------------------------------------------------------------
+  # n8n — orchestration. Stores its own state in the n8n schema of
+  # the same Postgres instance, using the n8n_service DB user.
+  # -------------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: csupport-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${N8N_DB_USER}
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
+      DB_POSTGRESDB_SCHEMA: n8n
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      GENERIC_TIMEZONE: Europe/Zagreb
+      TZ: Europe/Zagreb
+      # Suppresses an unrelated startup warning about file permissions on macOS.
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
+      # Allow workflow expressions to read process.env via $env.*.
+      # n8n locks this down by default since 1.x for security; we opt in
+      # because WF1 reads GEMINI_API_KEY straight out of the environment.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # Allow Code nodes to require Node built-ins like fs / path —
+      # needed by the KB seed workflow which reads markdown from disk.
+      NODE_FUNCTION_ALLOW_BUILTIN: "fs,path"
+      # Forwarded to expressions inside workflow nodes via $env.*.
+      GEMINI_API_KEY:    ${GEMINI_API_KEY:-}
+      COHERE_API_KEY:    ${COHERE_API_KEY:-}
+      # Pinecone — seed workflow upserts here, classify workflow queries
+      # for top-k matches before calling Gemini.
+      PINECONE_API_KEY:    ${PINECONE_API_KEY:-}
+      PINECONE_INDEX_HOST: ${PINECONE_INDEX_HOST:-}
+    volumes:
+      - n8n-data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - csupport-net
+
+  # -------------------------------------------------------------------
+  # frontend — React SPA served by nginx that also proxies /api/v1/*
+  # to the four Spring Boot services so the browser only ever talks
+  # to a single origin.
+  # -------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+    container_name: csupport-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - case-service
+      - employee-service
+      - notification-service
+      - analytics-service
+    networks:
+      - csupport-net
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  n8n-data:
+
+networks:
+  csupport-net:
+    driver: bridge

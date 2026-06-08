@@ -1,0 +1,60 @@
+/* =====================================================================
+ * Global styles. Antd handles components; this file just sets the
+ * shell + a couple of helpers (mono numerics, scroll polish).
+ * ===================================================================== */
+
+html, body, #root { height: 100%; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  font-variant-numeric: tabular-nums;
+  background: #fafafa;
+  color: #18181b;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Mono numerics for IDs, case numbers and metric values. */
+.mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tracked uppercase eyebrow. */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #71717a;
+}
+
+/* Subtle scrollbars. */
+*::-webkit-scrollbar        { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb  { background: #d4d4d8; border-radius: 4px; }
+*::-webkit-scrollbar-track  { background: transparent; }
+
+/* The brand strip in the dark sider. */
+.brand-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  height: 56px;
+  border-bottom: 1px solid #27272a;
+  color: #fafafa;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.brand-strip .sub { color: #a1a1aa; font-weight: 400; font-size: 11px; margin-left: auto; }
+
+/* Page title block — used at the top of every page. */
+.page-head { padding: 24px 24px 16px; }
+.page-head h1 {
+  font-size: 22px; font-weight: 600; letter-spacing: -0.01em;
+  color: #18181b; margin: 4px 0 0;
+}
+
+/* Trim default heading weight inside antd cards. */
+.ant-card .ant-card-head-title { font-weight: 600; }

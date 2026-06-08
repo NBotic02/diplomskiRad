@@ -1,0 +1,18 @@
+# =====================================================================
+# dev profile — local development against docker-compose stack.
+# Security is OPEN: no JWT required, no Auth0 setup needed yet.
+# This profile is what `mvn spring-boot:run` uses by default below.
+# =====================================================================
+app:
+  security:
+    enabled: false
+  # In dev we let outbound mail be enabled if GMAIL_APP_PASSWORD is set,
+  # otherwise the sender drops to log-only mode automatically.
+  mail:
+    enabled: ${MAIL_ENABLED:true}
+
+logging:
+  level:
+    com.customersupport.caseservice: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE

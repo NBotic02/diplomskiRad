@@ -1,0 +1,916 @@
+{
+  "id": "c79549f1-87a9-4a66-bf78-0a766bd9525d",
+  "name": "WF1 — Email intake & AI classification",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "errorWorkflow": ""
+  },
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Manual trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        400
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "gmailTrigger",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        200,
+        200
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": true,
+        "filters": {
+          "readStatus": "unread",
+          "labelIds": [
+            "INBOX"
+          ]
+        }
+      }
+    },
+    {
+      "id": "normalizeGmail",
+      "name": "Normalize Gmail",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        200
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Convert Gmail Trigger output to the {senderEmail, senderName, subject, body}\n// shape that the rest of the workflow consumes (same as Sample email).\nconst item = $input.first().json;\n\nconst fromHeader = item.From || item.from || (item.headers && item.headers.from) || '';\nconst subject    = item.Subject || item.subject || (item.headers && item.headers.subject) || '';\nconst body       = item.text || item.body || item.snippet || '';\n\n// Parse \"Display Name <addr@example.com>\" or just \"addr@example.com\"\nconst m = fromHeader.match(/^(.*?)\\s*<(.+?)>\\s*$/);\nconst senderName  = m ? m[1].replace(/^\"|\"$/g, '').trim() : '';\nconst senderEmail = m ? m[2].trim() : fromHeader.trim();\n\nreturn [{ json: {\n  senderEmail,\n  senderName: senderName || senderEmail,\n  subject,\n  body,\n} }];"
+      }
+    },
+    {
+      "id": "emailSource",
+      "name": "Email source",
+      "notes": "Passthrough node that unifies the two intake paths (Sample email for manual test, Normalize Gmail for real inbox). Downstream nodes always reference $('Email source').",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "return $input.all();"
+      }
+    },
+    {
+      "id": "sample",
+      "name": "Sample email",
+      "notes": "Stand-in for the Gmail / IMAP trigger. Swap this node for an Email Trigger (IMAP) node once credentials are configured — the rest of the workflow consumes the same {senderEmail, subject, body, senderName} fields.",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        400,
+        400
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "senderEmail",
+              "value": "marina.kovac.test@gmail.com",
+              "type": "string"
+            },
+            {
+              "id": "2",
+              "name": "senderName",
+              "value": "Marina Kovač",
+              "type": "string"
+            },
+            {
+              "id": "3",
+              "name": "subject",
+              "value": "Ne mogu se prijaviti na svoj račun već 3 dana",
+              "type": "string"
+            },
+            {
+              "id": "4",
+              "name": "body",
+              "value": "Poštovani,\n\nveć treći dan pokušavam ući u svoj račun i jednostavno ne ide. Kad upišem email i lozinku, samo mi izbacuje poruku \"Pogrešni podaci za prijavu\" iako sam 100% sigurna da unosim ispravnu lozinku — koristim istu već godinama.\n\nProbala sam i opciju \"Zaboravljena lozinka\" — kliknem na link, upišem email, dobijem poruku da je email poslan, ali ništa ne stiže. Ni u inboxu ni u spamu. Čekala sam pola sata, pa probala opet — isto. Provjerila sam pišem li ispravan email, pišem.\n\nNe znam što više. Imam narudžbu koju sam htjela pratiti i sad ne mogu uopće pristupiti računu. Možete li mi pomoći resetirati račun ili mi reći što se događa?\n\nHvala unaprijed,\nMarina",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "lookupCustomer",
+      "name": "Lookup customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        600,
+        400
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "=http://case-service:8081/api/v1/customers?email={{ encodeURIComponent($json.senderEmail) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "customerExists",
+      "name": "Customer exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        800,
+        400
+      ],
+      "parameters": {
+        "options": {
+          "looseTypeValidation": true
+        },
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "1",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              },
+              "leftValue": "={{ $json.customerId }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "createCustomer",
+      "name": "Create customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        520
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://case-service:8081/api/v1/customers",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  firstName: ($('Email source').item.json.senderName || 'Unknown').split(' ')[0],\n  lastName:  ($('Email source').item.json.senderName || 'Customer').split(' ').slice(1).join(' ') || 'Customer',\n  email:     $('Email source').item.json.senderEmail\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "highConfidence",
+      "name": "High confidence?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1800,
+        400
+      ],
+      "parameters": {
+        "options": {
+          "looseTypeValidation": true
+        },
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "1",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              },
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 0.85
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "createCaseAuto",
+      "name": "Create case (auto-resolved)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        280
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://case-service:8081/api/v1/cases",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  customerId:  $json.customer.customerId,\n  categoryId:  $json.categoryId,\n  subject:     $json.email.subject,\n  description: $json.email.body,\n  priority:    $json.priority,\n  status:      'RESOLVED'\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "commInboundAuto",
+      "name": "Inbound communication (auto)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://case-service:8081/api/v1/cases/{{ $json.caseId }}/communications",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  senderType: 'CUSTOMER',\n  senderId:   $('Merge verdict + context').first().json.customer.customerId,\n  subject:    $('Merge verdict + context').first().json.email.subject,\n  body:       $('Merge verdict + context').first().json.email.body\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "commOutboundAuto",
+      "name": "AI reply (outbound)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://case-service:8081/api/v1/cases/{{ $('Create case (auto-resolved)').first().json.caseId }}/communications",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  senderType: 'SYSTEM',\n  senderId:   '00000000-0000-0000-0000-000000000001',\n  subject:    'Re: ' + $('Merge verdict + context').first().json.email.subject,\n  body:       $('Merge verdict + context').first().json.response\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gmailAuto",
+      "name": "Gmail — auto reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2600,
+        220
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('Merge verdict + context').first().json.email.senderEmail }}",
+        "subject": "=Re: {{ $('Merge verdict + context').first().json.email.subject }}",
+        "emailType": "text",
+        "message": "=Hi {{ $('Merge verdict + context').first().json.customer.firstName || ($('Merge verdict + context').first().json.email.senderName || 'there').split(' ')[0] }},\n\nThank you for reaching out to our Customer Support team.\n\n{{ $('Merge verdict + context').first().json.response }}\n\nIf this resolves your question, no further action is needed. If you need additional help, simply reply to this email and we will get back to you.\n\nBest regards,\nCustomer Support Team",
+        "options": {
+          "appendAttribution": false
+        }
+      }
+    },
+    {
+      "id": "createCaseEsc",
+      "name": "Create case (open)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        520
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://case-service:8081/api/v1/cases",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  customerId:  $json.customer.customerId,\n  categoryId:  $json.categoryId,\n  subject:     $json.email.subject,\n  description: $json.email.body,\n  priority:    $json.priority,\n  status:      'OPEN'\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "commInboundEsc",
+      "name": "Inbound communication (esc)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        460
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://case-service:8081/api/v1/cases/{{ $json.caseId }}/communications",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  senderType: 'CUSTOMER',\n  senderId:   $('Merge verdict + context').first().json.customer.customerId,\n  subject:    $('Merge verdict + context').first().json.email.subject,\n  body:       $('Merge verdict + context').first().json.email.body\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "aiNoteEsc",
+      "name": "Pin AI suggestion as note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        460
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://case-service:8081/api/v1/cases/{{ $('Create case (open)').first().json.caseId }}/notes",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  authorId:  '00000000-0000-0000-0000-000000000001',\n  isPinned:  true,\n  content:   '🤖 AI suggestion (confidence ' + $('Merge verdict + context').first().json.confidence + '):\\n\\n' + $('Merge verdict + context').first().json.response\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "agent",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1300,
+        400
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Subject: {{ $('Email source').first().json.subject }}\n\nBody: {{ $('Email source').first().json.body }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "=You are a customer-support classifier and responder for an e-commerce store.\n\nAVAILABLE CATEGORIES (from the case_categories table — single source of truth):\n{{ $('Fetch categories').first().json.map(c => c.name).join(' | ') }}\n\nPROCESS\n1. Read the customer email (subject + body) and pick the most likely category\n   from the list above. If the email genuinely fits none of them, use \"Other\".\n\n2. Call `search_knowledge_base` once, passing that category. The tool returns up\n   to 3 FAQ articles plus a relevance score from a Cohere cross-encoder reranker.\n   Higher score = the article answers the customer's specific scenario more directly.\n\n3. Read the returned articles AND their relevance scores before drafting anything.\n   Treat the scores as evidence for how confident you should be:\n     score >= 0.7  : article directly addresses the question — quote/paraphrase it\n     score 0.4-0.7 : article frames the topic but doesn't answer the exact subcase\n     score < 0.4   : article is only loosely related — do NOT lean on it\n\n4. If the best-scoring article still doesn't cover the question, you MAY call the\n   tool one more time with a DIFFERENT category guess (any other name from the list).\n   Do not call more than twice.\n\n5. Use ONLY the retrieved articles to draft the response. NEVER invent policies,\n   timelines, or contact channels that aren't in the retrieved text.\n\nCONFIDENCE CALIBRATION\nThe `confidence` field is a HOLISTIC judgement combining:\n  (a) classification certainty (is the category obvious?), AND\n  (b) retrieval groundedness (does an article directly answer the question?)\n\nUse these tiers — do not exceed the cap implied by retrieval quality:\n  0.90 - 1.00 : Category is obvious AND a top-scoring article (>= 0.7) directly\n                addresses the customer's exact scenario.\n  0.70 - 0.89 : Category is obvious AND an article (0.4-0.7) covers the policy frame\n                but you had to extrapolate one step to answer the specific case.\n  0.50 - 0.69 : Category obvious but no article scored above 0.4. You cite the\n                general policy but the specific detail isn't in the knowledge base.\n  < 0.50      : The retrieved articles do NOT adequately cover the question.\n                The response MUST be a polite acknowledgement that the case will\n                be routed to a human specialist. Do NOT fabricate procedures.\n\nOUTPUT (return STRICT JSON matching the attached schema)\n- category   : one of the names from the AVAILABLE CATEGORIES list above.\n- categoryId : the integer categoryId of that category (look it up in\n               {{ JSON.stringify($('Fetch categories').first().json.map(c => ({id: c.categoryId, name: c.name}))) }})\n- priority   : CRITICAL | HIGH | MEDIUM | LOW\n- confidence : 0..1, per the calibration tiers above\n- summary    : one sentence describing the customer's issue\n- response   : the BODY of the reply only — NO greeting (\"Hi X,\"), NO sign-off\n               (\"Best regards,\" etc). Those are added automatically by the email\n               template. Up to 5 sentences, polite and direct, grounded ONLY in\n               the retrieved articles. If confidence < 0.5, write a one-paragraph\n               acknowledgement that the case is being routed to a human\n               specialist who will follow up shortly."
+        }
+      }
+    },
+    {
+      "id": "chatModel",
+      "name": "Gemini chat (2.5 Flash)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1140,
+        620
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "s6vjxIG6UrJaiyrQ",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      },
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash",
+        "options": {
+          "temperature": 0.2,
+          "maxOutputTokens": 1024
+        }
+      }
+    },
+    {
+      "id": "kbEmbeddings",
+      "name": "Gemini embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        800
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "s6vjxIG6UrJaiyrQ",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      },
+      "parameters": {
+        "modelName": "models/gemini-embedding-001"
+      }
+    },
+    {
+      "id": "outputParser",
+      "name": "Output schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        1500,
+        620
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"required\": [\n    \"category\",\n    \"categoryId\",\n    \"priority\",\n    \"confidence\",\n    \"summary\",\n    \"response\"\n  ],\n  \"properties\": {\n    \"category\": {\n      \"type\": \"string\",\n      \"description\": \"Category name from the AVAILABLE CATEGORIES list provided in the system prompt.\"\n    },\n    \"categoryId\": {\n      \"type\": \"integer\",\n      \"description\": \"The integer categoryId matching the chosen category name.\"\n    },\n    \"priority\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"CRITICAL\",\n        \"HIGH\",\n        \"MEDIUM\",\n        \"LOW\"\n      ]\n    },\n    \"confidence\": {\n      \"type\": \"number\",\n      \"minimum\": 0,\n      \"maximum\": 1\n    },\n    \"summary\": {\n      \"type\": \"string\"\n    },\n    \"response\": {\n      \"type\": \"string\"\n    }\n  }\n}"
+      }
+    },
+    {
+      "id": "mergeVerdict",
+      "name": "Merge verdict + context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        400
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// AI Agent + Structured Output Parser puts the parsed verdict\n// in $json.output. We re-attach the customer + email context so\n// downstream nodes (case creation, communication, agent assignment)\n// can keep using the existing references.\nlet verdict = $input.first().json.output ?? $input.first().json;\nif (typeof verdict === 'string') verdict = JSON.parse(verdict);\n\nconst lookup = $('Lookup customer').first().json;\nconst customer = lookup?.customerId ? lookup : $('Create customer').first().json;\nconst email = $('Email source').first().json;\n\nreturn [{ json: { ...verdict, customer, email } }];"
+      }
+    },
+    {
+      "id": "kbEmbeddings",
+      "name": "Gemini embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        820
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "s6vjxIG6UrJaiyrQ",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      },
+      "parameters": {
+        "modelName": "models/gemini-embedding-001"
+      }
+    },
+    {
+      "id": "kbTool",
+      "name": "Knowledge base (tool)",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        620
+      ],
+      "credentials": {
+        "pineconeApi": {
+          "id": "gE9amQ6uO2J2709e",
+          "name": "Pinecone account"
+        }
+      },
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolName": "search_knowledge_base",
+        "toolDescription": "Search the customer-support FAQ knowledge base. Pass the email's category (Billing | Technical | Account | Product) to filter retrieval to only that domain. Returns the top 3 most relevant articles after cross-encoder reranking.",
+        "pineconeIndex": {
+          "__rl": true,
+          "mode": "list",
+          "value": "customer-support-kb"
+        },
+        "topK": 3,
+        "includeDocumentMetadata": true,
+        "useReranker": true,
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "category",
+                "value": "={{ $fromAI('category', 'The email category — exactly one of: Billing, Technical, Account, Product', 'string') }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "kbReranker",
+      "name": "Reranker Cohere",
+      "type": "@n8n/n8n-nodes-langchain.rerankerCohere",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        820
+      ],
+      "credentials": {
+        "cohereApi": {
+          "id": "FiJBUXYTWMMCX6hd",
+          "name": "Cohere account"
+        }
+      },
+      "parameters": {
+        "model": "rerank-v3.5",
+        "topN": 3
+      }
+    },
+    {
+      "id": "gmailAck",
+      "name": "Gmail — acknowledgement",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2600,
+        460
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('Merge verdict + context').first().json.email.senderEmail }}",
+        "subject": "=[#{{ $('Create case (open)').first().json.caseNumber }}] We received your message",
+        "emailType": "text",
+        "message": "=Hi {{ $('Merge verdict + context').first().json.customer.firstName || ($('Merge verdict + context').first().json.email.senderName || 'there').split(' ')[0] }},\n\nThanks for reaching out — we've received your inquiry and opened case #{{ $('Create case (open)').first().json.caseNumber }} for tracking.\n\nA support agent will review your message and get back to you as soon as possible. There's no need to reply to this acknowledgement — we'll be in touch directly from your case.\n\nIf you have additional details to share in the meantime, simply reply to this email and we'll attach them to the case.\n\nBest regards,\nCustomer Support Team",
+        "options": {
+          "appendAttribution": false
+        }
+      }
+    },
+    {
+      "id": "commAckSystem",
+      "name": "Acknowledgement communication (esc)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2800,
+        460
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=http://case-service:8081/api/v1/cases/{{ $('Create case (open)').first().json.caseId }}/communications",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  senderType: 'SYSTEM',\n  senderId:   '00000000-0000-0000-0000-000000000001',\n  subject:    'We received your message',\n  body:       'Automated acknowledgement sent to ' + $('Merge verdict + context').first().json.email.senderEmail + ' — customer was notified that case #' + $('Create case (open)').first().json.caseNumber + ' is open and an agent will respond.'\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "fetchCategories",
+      "name": "Fetch categories",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        220
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "http://case-service:8081/api/v1/case-categories",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual trigger": {
+      "main": [
+        [
+          {
+            "node": "Sample email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Gmail": {
+      "main": [
+        [
+          {
+            "node": "Email source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample email": {
+      "main": [
+        [
+          {
+            "node": "Email source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email source": {
+      "main": [
+        [
+          {
+            "node": "Fetch categories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup customer": {
+      "main": [
+        [
+          {
+            "node": "Customer exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Customer exists?": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create customer": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High confidence?": {
+      "main": [
+        [
+          {
+            "node": "Create case (auto-resolved)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create case (open)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create case (auto-resolved)": {
+      "main": [
+        [
+          {
+            "node": "Inbound communication (auto)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inbound communication (auto)": {
+      "main": [
+        [
+          {
+            "node": "AI reply (outbound)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI reply (outbound)": {
+      "main": [
+        [
+          {
+            "node": "Gmail — auto reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create case (open)": {
+      "main": [
+        [
+          {
+            "node": "Inbound communication (esc)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inbound communication (esc)": {
+      "main": [
+        [
+          {
+            "node": "Pin AI suggestion as note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Merge verdict + context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge verdict + context": {
+      "main": [
+        [
+          {
+            "node": "High confidence?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini chat (2.5 Flash)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Knowledge base (tool)",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Knowledge base (tool)": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reranker Cohere": {
+      "ai_reranker": [
+        [
+          {
+            "node": "Knowledge base (tool)",
+            "type": "ai_reranker",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pin AI suggestion as note": {
+      "main": [
+        [
+          {
+            "node": "Gmail — acknowledgement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail — acknowledgement": {
+      "main": [
+        [
+          {
+            "node": "Acknowledgement communication (esc)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch categories": {
+      "main": [
+        [
+          {
+            "node": "Lookup customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

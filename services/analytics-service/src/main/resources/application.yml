@@ -1,0 +1,86 @@
+# =====================================================================
+# analytics-service — common configuration
+# =====================================================================
+spring:
+  application:
+    name: analytics-service
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:customer_support}?currentSchema=analytics,shared_types
+    username: ${ANALYTICS_DB_USER}
+    password: ${ANALYTICS_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: analytics
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    schemas: analytics
+    default-schema: analytics
+    create-schemas: false
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    listener:
+      simple:
+        retry:
+          enabled: true
+          initial-interval: 2s
+          max-attempts: 3
+
+  jackson:
+    mapper:
+      ACCEPT_CASE_INSENSITIVE_ENUMS: true
+
+server:
+  port: 8084
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    com.customersupport.analyticsservice: INFO
+    org.hibernate.SQL: WARN
+
+app:
+  rabbitmq:
+    case-events-exchange: case-events
+    case-events-queue:    analytics.case-events
+  bottleneck:
+    # Thresholds for the periodic detection job (every 30 minutes).
+    sla-compliance-min:        80.0
+    avg-resolution-minutes-max: 240.0
+    open-cases-max:            100
+  # Upstream case-service base URL — used by the scheduled aggregator
+  # to pull per-agent rollups before caching them in
+  # agent_performance_metrics.
+  case-service:
+    base-url: ${CASE_SERVICE_BASE_URL:http://case-service:8081}
+  agent-performance:
+    # How often the aggregator polls case-service for rollups. Short
+    # enough for "today" KPI tiles to feel fresh, long enough not to
+    # stress the case service.
+    poll-interval-ms: 300000   # 5 minutes

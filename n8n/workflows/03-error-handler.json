@@ -1,0 +1,82 @@
+{
+  "name": "WF3 — Workflow error handler",
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  },
+  "nodes": [
+    {
+      "id": "errorTrigger",
+      "name": "When another workflow errors",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "parameters": {}
+    },
+    {
+      "id": "extractCaseId",
+      "name": "Extract caseId (best-effort)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Walk the failed execution's per-node output data to find a caseId.\n// caseId is an optional UUID string stamped by any earlier node in WF1\n// (typically the 'Create case' HTTP response). Best-effort — if the\n// workflow failed before a case existed, caseId stays null and the\n// endpoint will record the failure without compensation.\nconst input = items[0].json;\nconst runData = input?.execution?.data?.resultData?.runData ?? {};\nlet caseId = null;\nconst uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;\nouter: for (const node of Object.keys(runData)) {\n  const runs = runData[node];\n  for (const run of runs) {\n    const main = run?.data?.main ?? [];\n    for (const port of main) {\n      for (const item of (port ?? [])) {\n        const j = item?.json ?? {};\n        const candidate = j.caseId ?? j.case_id ?? j.id;\n        if (typeof candidate === 'string' && uuidRe.test(candidate)) {\n          caseId = candidate;\n          break outer;\n        }\n      }\n    }\n  }\n}\nreturn [{ json: { caseId, original: input } }];"
+      }
+    },
+    {
+      "id": "shape",
+      "name": "Shape payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [640, 300],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "1", "name": "workflowName",   "value": "={{ $json.original.workflow.name }}",                                 "type": "string" },
+            { "id": "2", "name": "n8nExecutionId", "value": "={{ $json.original.execution.id }}",                                  "type": "string" },
+            { "id": "3", "name": "caseId",         "value": "={{ $json.caseId }}",                                                 "type": "string" },
+            { "id": "4", "name": "failedNode",     "value": "={{ $json.original.execution.error?.node?.name || $json.original.execution.lastNodeExecuted }}", "type": "string" },
+            { "id": "5", "name": "errorMessage",   "value": "={{ $json.original.execution.error?.message }}",                      "type": "string" },
+            { "id": "6", "name": "errorPayload",   "value": "={{ $json.original.execution.error || {} }}",                         "type": "object" },
+            { "id": "7", "name": "inboundPayload", "value": "={{ { workflowId: $json.original.workflow.id, executionUrl: $json.original.execution.url } }}", "type": "object" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "post",
+      "name": "POST /api/v1/workflow-failures",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://case-service:8081/api/v1/workflow-failures",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"workflowName\":   \"{{ $json.workflowName }}\",\n  \"n8nExecutionId\": \"{{ $json.n8nExecutionId }}\",\n  \"caseId\":         {{ $json.caseId ? '\"' + $json.caseId + '\"' : 'null' }},\n  \"failedNode\":     \"{{ $json.failedNode }}\",\n  \"errorMessage\":   {{ JSON.stringify($json.errorMessage || '') }},\n  \"errorPayload\":   {{ JSON.stringify($json.errorPayload || {}) }},\n  \"inboundPayload\": {{ JSON.stringify($json.inboundPayload || {}) }}\n}",
+        "options": {
+          "timeout": 5000,
+          "redirect": { "redirect": {} }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When another workflow errors": {
+      "main": [[{ "node": "Extract caseId (best-effort)", "type": "main", "index": 0 }]]
+    },
+    "Extract caseId (best-effort)": {
+      "main": [[{ "node": "Shape payload", "type": "main", "index": 0 }]]
+    },
+    "Shape payload": {
+      "main": [[{ "node": "POST /api/v1/workflow-failures", "type": "main", "index": 0 }]]
+    }
+  }
+}

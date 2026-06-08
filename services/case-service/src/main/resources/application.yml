@@ -1,0 +1,113 @@
+# =====================================================================
+# case-service — common configuration (shared across profiles)
+# =====================================================================
+spring:
+  application:
+    name: case-service
+
+  # Postgres — values come from environment variables. The runtime user
+  # is case_service (NOT the admin user); it owns only the case_mgmt
+  # schema and has INSERT+SELECT on shared_types.outbox_events.
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:customer_support}?currentSchema=case_mgmt,shared_types
+    username: ${CASE_DB_USER}
+    password: ${CASE_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Validate against Flyway-managed schema; never let Hibernate manage DDL.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: case_mgmt
+        jdbc:
+          time_zone: UTC
+        format_sql: false
+
+  flyway:
+    enabled: true
+    schemas: case_mgmt
+    default-schema: case_mgmt
+    # case_mgmt was created by the docker-entrypoint bootstrap; do not
+    # let Flyway try to recreate it.
+    create-schemas: false
+
+  # RabbitMQ — used by the outbox publisher to fan out events.
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    listener:
+      simple:
+        retry:
+          enabled: true
+          initial-interval: 2s
+          max-attempts: 3
+
+  # Gmail SMTP for outbound customer-facing email (agent replies on a
+  # case). Username / password come from .env. If credentials are blank
+  # the OutboundEmailSender drops to log-only mode so the dev profile
+  # stays usable without a configured mailbox.
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ${GMAIL_USER:}
+    password: ${GMAIL_APP_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
+
+server:
+  port: 8081
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    com.customersupport.caseservice: INFO
+    org.hibernate.SQL: WARN
+    org.springframework.amqp: INFO
+
+app:
+  outbox:
+    poll-interval-ms: 5000
+    batch-size: 50
+  rabbitmq:
+    case-events-exchange: case-events
+    agent-events-exchange: agent-events
+    agent-found-queue: case.agent-found
+  # Single-tenant default; n8n / external callers can override per-request via
+  # CreateCaseRequest.teamId. Matches the Customer Support department seeded
+  # in employee-service V2__seed.sql.
+  case:
+    default-team-id: ${DEFAULT_CASE_TEAM_ID:33333333-3333-3333-3333-333333333301}
+
+  # Outbound customer-facing email — agent replies on a case. Disabled
+  # by default for local dev; turn on in prod profile or via env once
+  # GMAIL_USER + GMAIL_APP_PASSWORD are populated.
+  mail:
+    enabled: ${MAIL_ENABLED:false}
+    from:    ${GMAIL_USER:no-reply@example.com}
+    from-name: ${MAIL_FROM_NAME:Supportly Customer Support}
