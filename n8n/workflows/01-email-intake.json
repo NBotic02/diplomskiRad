@@ -58,7 +58,7 @@
       ],
       "parameters": {
         "language": "javaScript",
-        "jsCode": "// Convert Gmail Trigger output to the {senderEmail, senderName, subject, body}\n// shape that the rest of the workflow consumes (same as Sample email).\nconst item = $input.first().json;\n\nconst fromHeader = item.From || item.from || (item.headers && item.headers.from) || '';\nconst subject    = item.Subject || item.subject || (item.headers && item.headers.subject) || '';\nconst body       = item.text || item.body || item.snippet || '';\n\n// Parse \"Display Name <addr@example.com>\" or just \"addr@example.com\"\nconst m = fromHeader.match(/^(.*?)\\s*<(.+?)>\\s*$/);\nconst senderName  = m ? m[1].replace(/^\"|\"$/g, '').trim() : '';\nconst senderEmail = m ? m[2].trim() : fromHeader.trim();\n\nreturn [{ json: {\n  senderEmail,\n  senderName: senderName || senderEmail,\n  subject,\n  body,\n} }];"
+        "jsCode": "// Convert Gmail Trigger output to the {senderEmail, senderName, subject, body}\n// shape that the rest of the workflow consumes (same as Sample email).\nconst item = $input.first().json;\n\nconst fromHeader = item.From || item.from || (item.headers && item.headers.from) || '';\nconst subject    = item.Subject || item.subject || (item.headers && item.headers.subject) || '';\nconst body       = item.text || item.body || item.snippet || '';\n\n// Parse \"Display Name <addr@example.com>\" or just \"addr@example.com\"\nconst m = fromHeader.match(/^(.*?)\\s*<(.+?)>\\s*$/);\nconst senderName  = m ? m[1].replace(/^\"|\"$/g, '').trim() : '';\nconst senderEmail = m ? m[2].trim() : fromHeader.trim();\n\nreturn [{ json: {\n  senderEmail,\n  senderName: senderName || senderEmail,\n  subject,\n  body,\n  messageId: item.id || item.messageId || '',\n  threadId: item.threadId || '',\n} }];"
       }
     },
     {
@@ -132,7 +132,7 @@
       "onError": "continueRegularOutput",
       "parameters": {
         "method": "GET",
-        "url": "=http://case-service:8081/api/v1/customers?email={{ encodeURIComponent($json.senderEmail) }}",
+        "url": "=http://case-service:8081/api/v1/customers?email={{ encodeURIComponent($('Email source').first().json.senderEmail) }}",
         "options": {
           "response": {
             "response": {
@@ -317,11 +317,12 @@
       ],
       "parameters": {
         "resource": "message",
-        "operation": "send",
+        "operation": "reply",
+        "messageId": "={{ $('Email source').first().json.messageId }}",
         "sendTo": "={{ $('Merge verdict + context').first().json.email.senderEmail }}",
         "subject": "=Re: {{ $('Merge verdict + context').first().json.email.subject }}",
         "emailType": "text",
-        "message": "=Hi {{ $('Merge verdict + context').first().json.customer.firstName || ($('Merge verdict + context').first().json.email.senderName || 'there').split(' ')[0] }},\n\nThank you for reaching out to our Customer Support team.\n\n{{ $('Merge verdict + context').first().json.response }}\n\nIf this resolves your question, no further action is needed. If you need additional help, simply reply to this email and we will get back to you.\n\nBest regards,\nCustomer Support Team",
+        "message": "={{ $('Merge verdict + context').first().json.response }}",
         "options": {
           "appendAttribution": false
         }
@@ -410,10 +411,10 @@
       ],
       "parameters": {
         "promptType": "define",
-        "text": "=Subject: {{ $('Email source').first().json.subject }}\n\nBody: {{ $('Email source').first().json.body }}",
+        "text": "=Customer name: {{ $('Email source').first().json.senderName }}\nSubject: {{ $('Email source').first().json.subject }}\n\nBody: {{ $('Email source').first().json.body }}",
         "hasOutputParser": true,
         "options": {
-          "systemMessage": "=You are a customer-support classifier and responder for an e-commerce store.\n\nAVAILABLE CATEGORIES (from the case_categories table — single source of truth):\n{{ $('Fetch categories').first().json.map(c => c.name).join(' | ') }}\n\nPROCESS\n1. Read the customer email (subject + body) and pick the most likely category\n   from the list above. If the email genuinely fits none of them, use \"Other\".\n\n2. Call `search_knowledge_base` once, passing that category. The tool returns up\n   to 3 FAQ articles plus a relevance score from a Cohere cross-encoder reranker.\n   Higher score = the article answers the customer's specific scenario more directly.\n\n3. Read the returned articles AND their relevance scores before drafting anything.\n   Treat the scores as evidence for how confident you should be:\n     score >= 0.7  : article directly addresses the question — quote/paraphrase it\n     score 0.4-0.7 : article frames the topic but doesn't answer the exact subcase\n     score < 0.4   : article is only loosely related — do NOT lean on it\n\n4. If the best-scoring article still doesn't cover the question, you MAY call the\n   tool one more time with a DIFFERENT category guess (any other name from the list).\n   Do not call more than twice.\n\n5. Use ONLY the retrieved articles to draft the response. NEVER invent policies,\n   timelines, or contact channels that aren't in the retrieved text.\n\nCONFIDENCE CALIBRATION\nThe `confidence` field is a HOLISTIC judgement combining:\n  (a) classification certainty (is the category obvious?), AND\n  (b) retrieval groundedness (does an article directly answer the question?)\n\nUse these tiers — do not exceed the cap implied by retrieval quality:\n  0.90 - 1.00 : Category is obvious AND a top-scoring article (>= 0.7) directly\n                addresses the customer's exact scenario.\n  0.70 - 0.89 : Category is obvious AND an article (0.4-0.7) covers the policy frame\n                but you had to extrapolate one step to answer the specific case.\n  0.50 - 0.69 : Category obvious but no article scored above 0.4. You cite the\n                general policy but the specific detail isn't in the knowledge base.\n  < 0.50      : The retrieved articles do NOT adequately cover the question.\n                The response MUST be a polite acknowledgement that the case will\n                be routed to a human specialist. Do NOT fabricate procedures.\n\nOUTPUT (return STRICT JSON matching the attached schema)\n- category   : one of the names from the AVAILABLE CATEGORIES list above.\n- categoryId : the integer categoryId of that category (look it up in\n               {{ JSON.stringify($('Fetch categories').first().json.map(c => ({id: c.categoryId, name: c.name}))) }})\n- priority   : CRITICAL | HIGH | MEDIUM | LOW\n- confidence : 0..1, per the calibration tiers above\n- summary    : one sentence describing the customer's issue\n- response   : the BODY of the reply only — NO greeting (\"Hi X,\"), NO sign-off\n               (\"Best regards,\" etc). Those are added automatically by the email\n               template. Up to 5 sentences, polite and direct, grounded ONLY in\n               the retrieved articles. If confidence < 0.5, write a one-paragraph\n               acknowledgement that the case is being routed to a human\n               specialist who will follow up shortly."
+          "systemMessage": "=You are a customer-support classifier and responder for an e-commerce store.\n\nAVAILABLE CATEGORIES (from the case_categories table — single source of truth):\n{{ $('Fetch categories').first().json.body.map(c => c.name).join(' | ') }}\n\nPROCESS\n1. Read the customer email (subject + body) and pick the most likely category\n   from the list above. If the email genuinely fits none of them, use \"Other\".\n\n2. Call `search_knowledge_base` once, passing that category. The tool returns up\n   to 3 FAQ articles plus a relevance score from a Cohere cross-encoder reranker.\n   Higher score = the article answers the customer's specific scenario more directly.\n\n3. Read the returned articles AND their relevance scores before drafting anything.\n   Treat the scores as evidence for how confident you should be:\n     score >= 0.7  : article directly addresses the question — quote/paraphrase it\n     score 0.4-0.7 : article frames the topic but doesn't answer the exact subcase\n     score < 0.4   : article is only loosely related — do NOT lean on it\n\n4. If the best-scoring article still doesn't cover the question, you MAY call the\n   tool one more time with a DIFFERENT category guess (any other name from the list).\n   Do not call more than twice.\n\n5. Use ONLY the retrieved articles to draft the response. NEVER invent policies,\n   timelines, or contact channels that aren't in the retrieved text.\n\nCONFIDENCE CALIBRATION\nThe `confidence` field is a HOLISTIC judgement combining:\n  (a) classification certainty (is the category obvious?), AND\n  (b) retrieval groundedness (does an article directly answer the question?)\n\nUse these tiers — do not exceed the cap implied by retrieval quality:\n  0.90 - 1.00 : Category is obvious AND a top-scoring article (>= 0.7) directly\n                addresses the customer's exact scenario.\n  0.70 - 0.89 : Category is obvious AND an article (0.4-0.7) covers the policy frame\n                but you had to extrapolate one step to answer the specific case.\n  0.50 - 0.69 : Category obvious but no article scored above 0.4. You cite the\n                general policy but the specific detail isn't in the knowledge base.\n  < 0.50      : The retrieved articles do NOT adequately cover the question.\n                The response MUST be a polite acknowledgement that the case will\n                be routed to a human specialist. Do NOT fabricate procedures.\n\nOUTPUT (return STRICT JSON matching the attached schema)\n- category   : one of the names from the AVAILABLE CATEGORIES list above.\n- categoryId : the integer categoryId of that category (look it up in\n               {{ JSON.stringify($('Fetch categories').first().json.body.map(c => ({id: c.categoryId, name: c.name}))) }})\n- priority   : CRITICAL | HIGH | MEDIUM | LOW\n- confidence : 0..1, per the calibration tiers above\n- summary    : one sentence describing the customer's issue\n- response   : the COMPLETE customer-facing reply email, ready to send as-is.\n               Write it in the SAME language as the customer's email (Croatian email\n               -> Croatian, English email -> English). Include three parts: (1) a short\n               greeting addressing the customer by first name, (2) the answer (up to 5\n               sentences, polite and direct, grounded ONLY in the retrieved articles),\n               and (3) a brief sign-off as the Customer Support Team. Do NOT add a\n               Subject line. Express only the facts from the retrieved articles,\n               faithfully translated. Do NOT invent policies, numbers, steps or\n               timeframes that are not in the retrieved text. If a needed detail is\n               missing, say it will be checked by an agent instead of guessing. If\n               confidence < 0.5, the body must politely say the case is being routed\n               to a human specialist who will follow up shortly.\n- acknowledgement : a SHORT customer-facing email sent to the customer when\n               confidence is BELOW the 0.85 auto-reply threshold and the case is\n               escalated to a human (sent instead of an answer). Write it in the SAME language\n               as the customer's email. Include a short greeting addressing the\n               customer by first name, one or two sentences saying we have received\n               their message and a support specialist will review it and get back to\n               them as soon as possible, and a brief sign-off as the Customer Support\n               Team. Do NOT answer the question here and do NOT invent any details.\n               Do NOT include a case number or a subject line.\n\nROUTING (how the two customer messages are used)\n  If confidence >= 0.85, `response` is sent to the customer as the automatic reply\n  and `acknowledgement` is not used.\n  If confidence < 0.85, the case is escalated to a human: the customer receives\n  `acknowledgement`, and `response` is attached as a suggested draft for the agent.\n  Always produce BOTH `response` and `acknowledgement`, regardless of confidence."
         }
       }
     },
@@ -436,7 +437,7 @@
         "modelName": "models/gemini-2.5-flash",
         "options": {
           "temperature": 0.2,
-          "maxOutputTokens": 1024
+          "maxOutputTokens": 8192
         }
       }
     },
@@ -470,7 +471,7 @@
       ],
       "parameters": {
         "schemaType": "manual",
-        "inputSchema": "{\n  \"type\": \"object\",\n  \"required\": [\n    \"category\",\n    \"categoryId\",\n    \"priority\",\n    \"confidence\",\n    \"summary\",\n    \"response\"\n  ],\n  \"properties\": {\n    \"category\": {\n      \"type\": \"string\",\n      \"description\": \"Category name from the AVAILABLE CATEGORIES list provided in the system prompt.\"\n    },\n    \"categoryId\": {\n      \"type\": \"integer\",\n      \"description\": \"The integer categoryId matching the chosen category name.\"\n    },\n    \"priority\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"CRITICAL\",\n        \"HIGH\",\n        \"MEDIUM\",\n        \"LOW\"\n      ]\n    },\n    \"confidence\": {\n      \"type\": \"number\",\n      \"minimum\": 0,\n      \"maximum\": 1\n    },\n    \"summary\": {\n      \"type\": \"string\"\n    },\n    \"response\": {\n      \"type\": \"string\"\n    }\n  }\n}"
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"required\": [\n    \"category\",\n    \"categoryId\",\n    \"priority\",\n    \"confidence\",\n    \"summary\",\n    \"response\",\n    \"acknowledgement\"\n  ],\n  \"properties\": {\n    \"category\": {\n      \"type\": \"string\",\n      \"description\": \"Category name from the AVAILABLE CATEGORIES list provided in the system prompt.\"\n    },\n    \"categoryId\": {\n      \"type\": \"integer\",\n      \"description\": \"The integer categoryId matching the chosen category name.\"\n    },\n    \"priority\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"CRITICAL\",\n        \"HIGH\",\n        \"MEDIUM\",\n        \"LOW\"\n      ]\n    },\n    \"confidence\": {\n      \"type\": \"number\",\n      \"minimum\": 0,\n      \"maximum\": 1\n    },\n    \"summary\": {\n      \"type\": \"string\"\n    },\n    \"response\": {\n      \"type\": \"string\"\n    },\n    \"acknowledgement\": {\n      \"type\": \"string\",\n      \"description\": \"Customer-facing acknowledgement email used when the case is escalated to a human, in the customer's language.\"\n    }\n  }\n}"
       }
     },
     {
@@ -524,7 +525,7 @@
       "parameters": {
         "mode": "retrieve-as-tool",
         "toolName": "search_knowledge_base",
-        "toolDescription": "Search the customer-support FAQ knowledge base. Pass the email's category (Billing | Technical | Account | Product) to filter retrieval to only that domain. Returns the top 3 most relevant articles after cross-encoder reranking.",
+        "toolDescription": "Search the customer-support FAQ knowledge base. Pass the most relevant category for the email (Billing | Refund request | Technical | API integration | Account | Login problem | Product | Other) to filter retrieval to that domain. Returns the top 3 most relevant articles after cross-encoder reranking.",
         "pineconeIndex": {
           "__rl": true,
           "mode": "list",
@@ -538,7 +539,7 @@
             "metadataValues": [
               {
                 "name": "category",
-                "value": "={{ $fromAI('category', 'The email category — exactly one of: Billing, Technical, Account, Product', 'string') }}"
+                "value": "={{ $fromAI('category', 'The knowledge-base category to filter on — exactly one of the available categories: Billing, Refund request, Technical, API integration, Account, Login problem, Product, Other', 'string') }}"
               }
             ]
           }
@@ -576,11 +577,12 @@
       ],
       "parameters": {
         "resource": "message",
-        "operation": "send",
+        "operation": "reply",
+        "messageId": "={{ $('Email source').first().json.messageId }}",
         "sendTo": "={{ $('Merge verdict + context').first().json.email.senderEmail }}",
-        "subject": "=[#{{ $('Create case (open)').first().json.caseNumber }}] We received your message",
+        "subject": "=Re: {{ $('Merge verdict + context').first().json.email.subject }}",
         "emailType": "text",
-        "message": "=Hi {{ $('Merge verdict + context').first().json.customer.firstName || ($('Merge verdict + context').first().json.email.senderName || 'there').split(' ')[0] }},\n\nThanks for reaching out — we've received your inquiry and opened case #{{ $('Create case (open)').first().json.caseNumber }} for tracking.\n\nA support agent will review your message and get back to you as soon as possible. There's no need to reply to this acknowledgement — we'll be in touch directly from your case.\n\nIf you have additional details to share in the meantime, simply reply to this email and we'll attach them to the case.\n\nBest regards,\nCustomer Support Team",
+        "message": "={{ $('Merge verdict + context').first().json.acknowledgement }}",
         "options": {
           "appendAttribution": false
         }
@@ -626,9 +628,120 @@
         "options": {
           "response": {
             "response": {
+              "fullResponse": true,
               "responseFormat": "json"
             }
           }
+        }
+      }
+    },
+    {
+      "id": "ifReplyAuto",
+      "name": "Has messageId? (auto)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2460,
+        180
+      ],
+      "parameters": {
+        "options": {
+          "looseTypeValidation": true
+        },
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "1",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              },
+              "leftValue": "={{ $('Email source').first().json.messageId }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gmailAutoSend",
+      "name": "Gmail — auto reply (new mail)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2680,
+        320
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('Merge verdict + context').first().json.email.senderEmail }}",
+        "subject": "=Re: {{ $('Merge verdict + context').first().json.email.subject }}",
+        "emailType": "text",
+        "message": "={{ $('Merge verdict + context').first().json.response }}",
+        "options": {
+          "appendAttribution": false
+        }
+      }
+    },
+    {
+      "id": "ifReplyAck",
+      "name": "Has messageId? (ack)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2460,
+        600
+      ],
+      "parameters": {
+        "options": {
+          "looseTypeValidation": true
+        },
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "1",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              },
+              "leftValue": "={{ $('Email source').first().json.messageId }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gmailAckSend",
+      "name": "Gmail — acknowledgement (new mail)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2680,
+        640
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('Merge verdict + context').first().json.email.senderEmail }}",
+        "subject": "=Re: {{ $('Merge verdict + context').first().json.email.subject }}",
+        "emailType": "text",
+        "message": "={{ $('Merge verdict + context').first().json.acknowledgement }}",
+        "options": {
+          "appendAttribution": false
         }
       }
     }
@@ -773,7 +886,7 @@
       "main": [
         [
           {
-            "node": "Gmail — auto reply",
+            "node": "Has messageId? (auto)",
             "type": "main",
             "index": 0
           }
@@ -883,7 +996,7 @@
       "main": [
         [
           {
-            "node": "Gmail — acknowledgement",
+            "node": "Has messageId? (ack)",
             "type": "main",
             "index": 0
           }
@@ -906,6 +1019,53 @@
         [
           {
             "node": "Lookup customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has messageId? (auto)": {
+      "main": [
+        [
+          {
+            "node": "Gmail — auto reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gmail — auto reply (new mail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has messageId? (ack)": {
+      "main": [
+        [
+          {
+            "node": "Gmail — acknowledgement",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gmail — acknowledgement (new mail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail — acknowledgement (new mail)": {
+      "main": [
+        [
+          {
+            "node": "Acknowledgement communication (esc)",
             "type": "main",
             "index": 0
           }
